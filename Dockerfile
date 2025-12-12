@@ -1,3 +1,6 @@
+# or nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 (CUDA version can go as low as CUDA 12.2 but need to check)
+#ARG BASE_IMAGE=ubuntu:22.04
+ARG BASE_IMAGE=nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 # syntax=docker/dockerfile:1
 # AudioMuse-AI Dockerfile
 # Supports both CPU (ubuntu:22.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04) builds
@@ -81,6 +84,35 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 # Version pinning ensures reproducible builds across different build times
 # cuda-compiler is conditionally installed for NVIDIA base images (needed for cupy JIT)
 RUN set -ux; \
+  n=0; \
+  until [ "$n" -ge 5 ]; do \
+    if apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-dev \
+      libfftw3-3=3.3.8-2ubuntu8 libyaml-0-2 libsamplerate0 \
+      libsndfile1=1.0.31-2ubuntu0.2 \
+      ffmpeg wget git vim \
+      redis-tools curl \
+      supervisor \
+      strace \
+      procps \
+      iputils-ping \
+      libopenblas-dev=0.3.20+ds-1 \
+      liblapack-dev=3.10.0-2ubuntu1 \
+      libpq-dev \
+      gcc \
+      g++ \
+      "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+      break; \
+    fi; \
+    n=$((n+1)); \
+    echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+    sleep $((n*n)); \
+  done; \
+  rm -rf /var/lib/apt/lists/* \
+  apt-get remove -y python3-numpy || true; \
+  apt-get autoremove -y || true;
+
+#RUN test -f /usr/local/cuda-12.8/nvvm/libdevice/libdevice.10.bc
     n=0; \
     until [ "$n" -ge 5 ]; do \
         if apt-get update && apt-get install -y --no-install-recommends \
@@ -117,6 +149,43 @@ ARG BASE_IMAGE
 # pydub is for audio conversion
 # Pin numpy to a stable version to avoid numeric differences between builds
 RUN --mount=type=cache,target=/root/.cache/pip \
+    bash -lc '\
+      GPU_PKGS="flatbuffers packaging protobuf sympy"; \
+      pip3 install --no-cache-dir numpy==1.26.4 || exit 1; \
+      pip3 install --no-cache-dir \
+        scipy==1.15.3 \
+        numba==0.60.0 \
+        soundfile==0.13.1 \
+        Flask \
+        Flask-Cors \
+        redis \
+        requests \
+        scikit-learn==1.7.2 \
+        rq \
+        pyyaml \
+        six \
+        voyager==2.1.0 \
+        rapidfuzz \
+        psycopg2-binary \
+        ftfy \
+        flasgger \
+        sqlglot \
+        google-generativeai \
+        mistralai \
+        umap-learn \
+        pydub \
+        python-mpd2 \
+        onnx==1.14.1 \
+        librosa==0.11.0 || exit 1; \
+      if [[ "${BASE_IMAGE}" =~ ^nvidia/cuda: ]]; then \
+        echo "Detected NVIDIA base image: installing GPU-only packages and onnxruntime-gpu"; \
+        pip3 install --no-cache-dir $GPU_PKGS || exit 1; \
+        pip3 install --no-cache-dir onnxruntime-gpu==1.15.1 || exit 1; \
+      else \
+        echo "CPU base image: installing onnxruntime (CPU) only"; \
+        pip3 install --no-cache-dir onnxruntime==1.15.1 || exit 1; \
+      fi'
+
     pip3 install --prefix=/install \
       numpy==1.26.4 \
       scipy==1.15.3 \
@@ -175,6 +244,9 @@ ENV LANG=C.UTF-8 \
     DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
+
+# COPY --from=libraries /install/ /usr/
+COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
 
 # Copy Python packages from libraries stage
 COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/

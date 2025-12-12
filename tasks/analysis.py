@@ -408,14 +408,6 @@ def analyze_track(file_path, mood_labels_list, model_paths):
             logger.error(f"Error predicting '{key}' for {os.path.basename(file_path)}: {e}", exc_info=True)
             other_predictions[key] = 0.0
 
-    # --- 5. Final Aggregation for Storage ---
-    processed_embeddings = np.mean(embeddings_per_patch, axis=0)
-
-    return {
-        "tempo": float(tempo), "key": musical_key, "scale": scale,
-        "moods": moods, "energy": float(average_energy), **other_predictions
-    }, processed_embeddings
-
 
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
