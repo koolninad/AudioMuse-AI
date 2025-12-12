@@ -304,6 +304,19 @@
                     </div>
                 </div>
 
+                            <fieldset>
+                                <legend>AI Playlist Naming</legend>
+                                <div class="param-group">
+                                    <div>
+                                        <label for="config-ai_model_provider">AI Provider:</label>
+                                        <select id="config-ai_model_provider">
+                                            <option value="OLLAMA">Ollama</option>
+                                            <option value="GEMINI">Gemini</option>
+                                            <option value="MISTRAL">Mistral</option>
+                                            <option value="OPENAI">OpenAI</option>
+                                            <option value="NONE" selected>None</option>
+                                        </select>
+                                    </div>
                 <div id="gmm-params" class="advanced-param hidden">
                     <h4>GMM Specific:</h4>
                     <div>
@@ -373,6 +386,36 @@
                         </select>
                     </div>
 
+                                    <div id="mistral-config-group" class="hidden">
+                                         <h4>Mistral Configuration:</h4>
+                                        <div>
+                                            <label for="config-mistral_model_name">Mistral Model Name:</label>
+                                            <input type="text" id="config-mistral_model_name" value="ministral-3b-latest">
+                                        </div>
+                                    </div>
+                                    <div id="openai-config-group" class="hidden">
+                                         <h4>OpenAI Configuration:</h4>
+                                        <div>
+                                            <label for="config-openai_model_name">OpenAI Model Name:</label>
+                                            <input type="text" id="config-openai_model_name" value="gpt-4o">
+                                        </div>
+                                        <div>
+                                            <label for="config-openai_api_key">OpenAI API Key:</label>
+                                            <input type="text" id="config-openai_api_key" placeholder="Enter your OpenAI API Key">
+                                        </div>
+                                        <div>
+                                            <label for="config-openai_base_url">OpenAI Base URL:</label>
+                                            <input type="text" id="config-openai_base_url" placeholder="https://api.openai.com/v1/chat/completions">
+                                        </div>
+                                        <div>
+                                            <label for="config-openai_api_tokens">Max Tokens:</label>
+                                            <input type="number" id="config-openai_max_tokens" value="1000">   
+                                        </div>
+                                    </div>
+                                </div>
+                            </fieldset>
+                        </form>
+                    </section>
                     <div id="ollama-config-group" class="hidden">
                         <h4>Ollama Configuration:</h4>
                         <div>

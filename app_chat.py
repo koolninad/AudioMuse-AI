@@ -20,7 +20,9 @@ from config import (
     MISTRAL_MODEL_NAME, MISTRAL_API_KEY,
     AI_MODEL_PROVIDER, # Default AI provider
     AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, # Import new config
+    OPENAI_API_KEY, OPENAI_MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_TOKENS # Import OpenAI config
 )
+from ai import get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, get_openai_playlist_name # Import functions to call AI
 from ai import (
     get_gemini_playlist_name, get_ollama_playlist_name, get_mistral_playlist_name, 
     get_openai_compatible_playlist_name, call_ai_for_chat,
@@ -212,6 +214,15 @@ def chat_home():
                             'default_mistral_model_name': {
                                 'type': 'string', 'example': 'ministral-3b-latest'
                             },
+                            'default_openai_model_name': {
+                                'type': 'string', 'example': 'gpt-4o-mini'
+                            },
+                            'default_openai_base_url': {
+                                'type': 'string', 'example': 'https://api.openai.com/v1/chat/completions'
+                            },
+                            'default_openai_api_tokens': {
+                                'type': 'integer', 'example': 1000
+                            }
                         }
                     }
                 }
@@ -232,6 +243,9 @@ def chat_config_defaults_api():
         "openai_server_url": OPENAI_SERVER_URL, # OpenAI server URL for display/info
         "default_gemini_model_name": GEMINI_MODEL_NAME,
         "default_mistral_model_name": MISTRAL_MODEL_NAME,
+        "default_openai_model_name": OPENAI_MODEL_NAME,
+        "default_openai_base_url": OPENAI_BASE_URL,
+        "default_openai_api_tokens": OPENAI_API_TOKENS
     }), 200
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
@@ -254,6 +268,9 @@ def chat_config_defaults_api():
                         },
                         'ai_provider': {
                             'type': 'string',
+                            'description': 'The AI provider to use (OLLAMA, GEMINI, MISTRAL, OPENAI, NONE). Defaults to server config.',
+                            'example': 'GEMINI',
+                            'enum': ['OLLAMA', 'GEMINI', "MISTRAL", "OPENAI", 'NONE']
                             'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
                             'example': 'GEMINI',
                             'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE']
@@ -280,10 +297,17 @@ def chat_config_defaults_api():
                         'gemini_api_key': {
                             'type': 'string',
                             'description': 'Custom Gemini API key (optional, defaults to server configuration).',
+                            'example': 'YOUR-GEMINI-API-KEY-HERE'
                         },
                         'mistral_api_key': {
                             'type': 'string',
                             'description': 'Custom Mistral API key (optional, defaults to server configuration).',
+                            'example': 'YOUR-MISTRAL-API-KEY-HERE'
+                        },
+                        'openai_api_key': {
+                            'type': 'string',
+                            'description': 'Custom OpenAI API key (optional, defaults to server configuration).',
+                            'example': 'sk-your-own-key'
                         }
                     }
                 }
@@ -375,6 +399,9 @@ def chat_playlist_api():
     if 'gemini_api_key' in data_for_log and data_for_log['gemini_api_key']:
         data_for_log['gemini_api_key'] = 'API-KEY'
     if 'mistral_api_key' in data_for_log and data_for_log['mistral_api_key']:
+        data_for_log['mistral_api_key'] = 'API-KEY' # Masked
+    if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
+        data_for_log['openai_api_key'] = 'API-KEY' # Masked
         data_for_log['mistral_api_key'] = 'API-KEY'
     if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
         data_for_log['openai_api_key'] = 'API-KEY'
@@ -484,6 +511,108 @@ def chat_playlist_api():
     for iteration in range(max_iterations):
         current_song_count = len(all_songs)
         
+        current_prompt_for_ai = ""
+        retry_reason_for_prompt = last_error_for_retry # Capture before it's potentially overwritten
+
+        if attempt_num > 0: # This is a retry
+            ai_response_message += f"Retrying due to previous issue: {retry_reason_for_prompt}\n"
+            if "no results" in str(retry_reason_for_prompt).lower():
+                retry_prompt_text = f"""The user's original request was: '{original_user_input}'
+Your previous SQL query attempt was:
+```sql
+{last_raw_sql_from_ai}
+```
+This query was valid but returned no songs.
+Please make the query less stringent to find some matching songs. For example, you could broaden search terms, adjust thresholds, or simplify conditions.
+Regenerate a SQL query based on the original instructions and user request, but aim for wider results.
+Ensure all SQL rules are followed.
+Return ONLY the new SQL query.
+---
+Original full prompt context (for reference):
+{base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)}
+"""
+            else: # SQL or DB Error
+                retry_prompt_text = f"""The user's original request was: '{original_user_input}'
+Your previous SQL query attempt was:
+```sql
+{last_raw_sql_from_ai}
+```
+This query resulted in the following error: '{retry_reason_for_prompt}'
+Please carefully review the error and your previous SQL.
+Then, regenerate a corrected SQL query based on the original instructions and user request.
+Ensure all SQL rules are followed, especially for string escaping (e.g., 'Player''s Choice') and query structure.
+Return ONLY the corrected SQL query.
+---
+Original full prompt context (for reference):
+{base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)}
+"""
+            current_prompt_for_ai = retry_prompt_text
+        else: # First attempt
+            current_prompt_for_ai = base_expert_playlist_creator_prompt.replace("{user_input_placeholder}", original_user_input)
+
+        raw_sql_from_ai_this_attempt = None
+        # --- Call AI (Ollama/Gemini/Mistral) ---
+        if ai_provider == "OLLAMA":
+            actual_model_used = ai_model_from_request or OLLAMA_MODEL_NAME
+            ollama_url_from_request = data.get('ollama_server_url', OLLAMA_SERVER_URL)
+            ai_response_message += f"Processing with OLLAMA model: {actual_model_used} (at {ollama_url_from_request}).\n"
+            raw_sql_from_ai_this_attempt = get_ollama_playlist_name(ollama_url_from_request, actual_model_used, current_prompt_for_ai)
+            if raw_sql_from_ai_this_attempt.startswith("Error:") or raw_sql_from_ai_this_attempt.startswith("An unexpected error occurred:"):
+                ai_response_message += f"Ollama API Error: {raw_sql_from_ai_this_attempt}\n"
+                last_error_for_retry = raw_sql_from_ai_this_attempt # Store error
+                raw_sql_from_ai_this_attempt = None # Mark as failed AI call
+
+        elif ai_provider == "GEMINI":
+            actual_model_used = ai_model_from_request or GEMINI_MODEL_NAME
+            # MODIFIED: Get API key from request, but fall back to server config if not provided.
+            gemini_api_key_from_request = data.get('gemini_api_key') or GEMINI_API_KEY
+            if not gemini_api_key_from_request or gemini_api_key_from_request == "YOUR-GEMINI-API-KEY-HERE":
+                error_msg = "Error: Gemini API key is missing. Please provide a valid API key or set it in the server configuration."
+                ai_response_message += error_msg + "\n"
+                if attempt_num == 0:
+                    return jsonify({"response": {"message": ai_response_message, "original_request": original_user_input, "ai_provider_used": ai_provider, "ai_model_selected": actual_model_used, "executed_query": None, "query_results": None}}), 400
+                last_error_for_retry = error_msg
+                break
+            ai_response_message += f"Processing with GEMINI model: {actual_model_used}.\n"
+            raw_sql_from_ai_this_attempt = get_gemini_playlist_name(gemini_api_key_from_request, actual_model_used, current_prompt_for_ai)
+            if raw_sql_from_ai_this_attempt.startswith("Error:"):
+                ai_response_message += f"Gemini API Error: {raw_sql_from_ai_this_attempt}\n"
+                last_error_for_retry = raw_sql_from_ai_this_attempt
+                raw_sql_from_ai_this_attempt = None
+
+        elif ai_provider == "MISTRAL":
+            actual_model_used = ai_model_from_request or MISTRAL_MODEL_NAME
+            # MODIFIED: Get API key from request, but fall back to server config if not provided.
+            mistral_api_key_from_request = data.get('mistral_api_key') or MISTRAL_API_KEY
+            if not mistral_api_key_from_request or mistral_api_key_from_request == "YOUR-MISTRAL-API-KEY-HERE":
+                error_msg = "Error: Mistral API key is missing. Please provide a valid API key or set it in the server configuration."
+                ai_response_message += error_msg + "\n"
+                if attempt_num == 0:
+                    return jsonify({"response": {"message": ai_response_message, "original_request": original_user_input, "ai_provider_used": ai_provider, "ai_model_selected": actual_model_used, "executed_query": None, "query_results": None}}), 400
+                last_error_for_retry = error_msg
+                break
+            ai_response_message += f"Processing with MISTRAL model: {actual_model_used}.\n"
+            raw_sql_from_ai_this_attempt = get_mistral_playlist_name(mistral_api_key_from_request, actual_model_used, current_prompt_for_ai)
+            if raw_sql_from_ai_this_attempt.startswith("Error:"):
+                ai_response_message += f"Mistral API Error: {raw_sql_from_ai_this_attempt}\n"
+                last_error_for_retry = raw_sql_from_ai_this_attempt
+                raw_sql_from_ai_this_attempt = None
+        
+        elif ai_provider == "OPENAI":
+            actual_model_used = ai_model_from_request or OPENAI_MODEL_NAME
+            openai_api_key_from_request = data.get('openai_api_key') or OPENAI_API_KEY
+            openai_base_url_from_request = data.get('openai_base_url') or OPENAI_BASE_URL
+            openai_api_tokens_from_request = data.get('openai_api_tokens') or OPENAI_API_TOKENS
+            ai_response_message += f"Processing with OPENAI model: {actual_model_used}.\n"
+            raw_sql_from_ai_this_attempt = get_openai_playlist_name(current_prompt_for_ai, actual_model_used, openai_api_key_from_request, openai_base_url_from_request, openai_api_tokens_from_request, base_expert_playlist_creator_prompt)
+            if raw_sql_from_ai_this_attempt.startswith("Error:"):
+                ai_response_message += f"OpenAI API Error: {raw_sql_from_ai_this_attempt}\n"
+                last_error_for_retry = raw_sql_from_ai_this_attempt
+                raw_sql_from_ai_this_attempt = None
+
+        elif ai_provider == "NONE":
+            ai_response_message += "No AI provider selected. Input acknowledged."
+            break 
         log_messages.append(f"\n{'='*60}")
         log_messages.append(f"ITERATION {iteration + 1}/{max_iterations}")
         log_messages.append(f"Current progress: {current_song_count}/{target_song_count} songs")

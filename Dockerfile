@@ -114,6 +114,37 @@ FROM base AS libraries
 
 ARG BASE_IMAGE
 
+# pydub is for audio conversion
+# Pin numpy to a stable version to avoid numeric differences between builds
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --prefix=/install \
+      numpy==1.26.4 \
+      scipy==1.15.3 \
+      numba==0.60.0 \
+      soundfile==0.13.1 \
+      Flask \
+      Flask-Cors \
+      redis \
+      requests \
+      scikit-learn==1.7.2 \
+      rq \
+      pyyaml \
+      six \
+      voyager==2.1.0 \
+      rapidfuzz \
+      psycopg2-binary \
+      ftfy \
+      flasgger \
+      sqlglot \
+      google-generativeai \
+      mistralai \
+      openai \
+  umap-learn \
+      pydub \
+      python-mpd2 \
+      onnx==1.14.1 \
+      onnxruntime==1.15.1 \
+      librosa==0.11.0
 WORKDIR /app
 
 # Copy requirements files
