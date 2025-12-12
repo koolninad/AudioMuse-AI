@@ -28,8 +28,9 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, \
   SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
   PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
-  AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
+  AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
   TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
+  OPENAI_MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_API_TOKENS, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN  # --- NEW: Import path distance metric and alchemy defaults ---
 
@@ -110,7 +111,7 @@ def index():
             schema:
               type: string
     """
-    return render_template('index.html')
+    return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
 
 
 @app.route('/api/status/<task_id>', methods=['GET'])
@@ -460,8 +461,10 @@ def get_config_endpoint():
         "stratified_sampling_target_percentile": STRATIFIED_SAMPLING_TARGET_PERCENTILE,
         "ai_model_provider": AI_MODEL_PROVIDER,
         "ollama_server_url": OLLAMA_SERVER_URL, "ollama_model_name": OLLAMA_MODEL_NAME,
+        "openai_server_url": OPENAI_SERVER_URL, "openai_model_name": OPENAI_MODEL_NAME,
         "gemini_model_name": GEMINI_MODEL_NAME,
         "mistral_model_name": MISTRAL_MODEL_NAME,
+        "OPENAI_model_name": OPENAI_MODEL_NAME, "OPENAI_base_url": OPENAI_BASE_URL, "OPENAI_api_tokens": OPENAI_API_TOKENS,
         "top_n_moods": TOP_N_MOODS, "mood_labels": MOOD_LABELS, "clustering_runs": CLUSTERING_RUNS,
         "top_n_playlists": TOP_N_PLAYLISTS,
         "enable_clustering_embeddings": ENABLE_CLUSTERING_EMBEDDINGS,
@@ -488,7 +491,7 @@ def get_playlists_endpoint():
     from collections import defaultdict # Local import if not used elsewhere globally
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name, title")
+    cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
     rows = cur.fetchall()
     cur.close()
     playlists_data = defaultdict(list)
@@ -525,11 +528,27 @@ def listen_for_index_reloads():
           try:
             from tasks.voyager_manager import load_voyager_index_for_querying
             load_voyager_index_for_querying(force_reload=True)
-            from app_helper import load_map_projection
-            load_map_projection('main_map')
-            logger.info("In-memory Voyager index and map reloaded successfully by background listener.")
+            from tasks.artist_gmm_manager import load_artist_index_for_querying
+            load_artist_index_for_querying(force_reload=True)
+            from app_helper import load_map_projection, load_artist_projection
+            load_map_projection('main_map', force_reload=True)
+            load_artist_projection('artist_map', force_reload=True)
+            # Rebuild the map JSON cache used by the /api/map endpoint
+            from app_map import build_map_cache
+            build_map_cache()
+            logger.info("In-memory Voyager index, artist index, map projections reloaded successfully by background listener.")
           except Exception as e:
-            logger.error(f"Error reloading Voyager index or map from background listener: {e}", exc_info=True)
+            logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
+      elif message_data == 'reload-artist':
+        # Reload artist similarity index only (legacy support)
+        with app.app_context():
+          logger.info("Triggering in-memory artist similarity index reload from background listener.")
+          try:
+            from tasks.artist_gmm_manager import load_artist_index_for_querying
+            load_artist_index_for_querying(force_reload=True)
+            logger.info("In-memory artist similarity index reloaded successfully by background listener.")
+          except Exception as e:
+            logger.error(f"Error reloading artist similarity index from background listener: {e}", exc_info=True)
 
 
 
@@ -555,6 +574,8 @@ from app_collection import collection_bp
 from app_external import external_bp # --- NEW: Import the external blueprint ---
 from app_alchemy import alchemy_bp
 from app_map import map_bp
+from app_waveform import waveform_bp
+from app_artist_similarity import artist_similarity_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -567,6 +588,8 @@ app.register_blueprint(collection_bp)
 app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
 app.register_blueprint(alchemy_bp)
 app.register_blueprint(map_bp)
+app.register_blueprint(waveform_bp)
+app.register_blueprint(artist_similarity_bp)
 
 if __name__ == '__main__':
   os.makedirs(TEMP_DIR, exist_ok=True)
@@ -575,6 +598,13 @@ if __name__ == '__main__':
     # --- Initial Voyager Index Load ---
     from tasks.voyager_manager import load_voyager_index_for_querying
     load_voyager_index_for_querying()
+    # --- Load Artist Similarity Index ---
+    from tasks.artist_gmm_manager import load_artist_index_for_querying
+    try:
+      load_artist_index_for_querying()
+      logger.info("Artist similarity index loaded at startup.")
+    except Exception as e:
+      logger.warning(f"Failed to load artist similarity index at startup: {e}")
     # Also try to load precomputed map projection into memory if available
     try:
       from app_helper import load_map_projection
@@ -582,6 +612,13 @@ if __name__ == '__main__':
       logger.info("In-memory map projection loaded at startup.")
     except Exception as e:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+    # Also try to load artist component projection into memory
+    try:
+      from app_helper import load_artist_projection
+      load_artist_projection('artist_map')
+      logger.info("In-memory artist component projection loaded at startup.")
+    except Exception as e:
+      logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
     # Initialize map JSON cache once at startup (reads DB one time)
     # Run this in a background daemon thread so the Flask process doesn't block on the heavy DB read.
     def _start_map_init_background():

@@ -6,6 +6,7 @@ import logging
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
+  get_max_distance_for_id,
     create_playlist_from_ids,
     search_tracks_by_title_and_artist,
     get_item_id_by_title_and_artist
@@ -31,7 +32,7 @@ def similarity_page():
             schema:
               type: string
     """
-    return render_template('similarity.html')
+    return render_template('similarity.html', title = 'AudioMuse-AI - Playlist from Similar Song', active='similarity')
 
 @voyager_bp.route('/api/search_tracks', methods=['GET'])
 def search_tracks_endpoint():
@@ -224,6 +225,54 @@ def get_similar_tracks_endpoint():
     except Exception as e:
         logger.error(f"Unexpected error finding neighbors for {target_item_id}: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred."}), 500
+
+
+@voyager_bp.route('/api/max_distance', methods=['GET'])
+def get_max_distance_endpoint():
+  """
+  Returns the exact maximum distance from the provided item_id to any other item in the index.
+  Query param: item_id (required)
+  Response: { "max_distance": float, "farthest_item_id": str | null }
+  """
+  item_id = request.args.get('item_id')
+  if not item_id:
+    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+
+  try:
+    result = get_max_distance_for_id(item_id)
+    if result is None:
+      return jsonify({"error": f"Item '{item_id}' not found in index or index unavailable."}), 404
+    return jsonify(result)
+  except RuntimeError as e:
+    logger.error(f"Runtime error computing max distance for {item_id}: {e}", exc_info=True)
+    return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+  except Exception as e:
+    logger.error(f"Unexpected error computing max distance for {item_id}: {e}", exc_info=True)
+    return jsonify({"error": "An unexpected error occurred."}), 500
+
+
+@voyager_bp.route('/api/track', methods=['GET'])
+def get_track_endpoint():
+  """
+  Fetch basic track metadata (title, author) for a given item_id.
+  Query param: item_id (required)
+  Response: { "item_id": str, "title": str, "author": str } or 404
+  """
+  item_id = request.args.get('item_id')
+  if not item_id:
+    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+
+  try:
+    from app import get_score_data_by_ids
+    details = get_score_data_by_ids([item_id])
+    if not details:
+      return jsonify({"error": f"Item '{item_id}' not found."}), 404
+    # Return only the basic fields
+    d = details[0]
+    return jsonify({"item_id": d.get('item_id'), "title": d.get('title'), "author": d.get('author')}), 200
+  except Exception as e:
+    logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
+    return jsonify({"error": "An unexpected error occurred."}), 500
 
 @voyager_bp.route('/api/create_playlist', methods=['POST'])
 def create_media_server_playlist():

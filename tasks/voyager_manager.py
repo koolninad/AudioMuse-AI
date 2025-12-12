@@ -3,10 +3,20 @@ import json
 import logging
 import tempfile
 import numpy as np
-import voyager # type: ignore
 import psycopg2 # type: ignore
 from psycopg2.extras import DictCursor
 import io 
+
+# Attempt to import Voyager (may be missing on non-AVX systems)
+try:
+    import voyager  # type: ignore
+    VOYAGER_AVAILABLE = True
+except ImportError:
+    logging.getLogger(__name__).warning("Voyager library not found. HNSW-based features will be disabled (non-AVX CPU detected).")
+    VOYAGER_AVAILABLE = False
+except Exception as e:
+    logging.getLogger(__name__).error(f"Error importing Voyager: {e}")
+    VOYAGER_AVAILABLE = False
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
@@ -175,25 +185,138 @@ def load_voyager_index_for_querying(force_reload=False):
         voyager_index, id_map, reverse_id_map = None, None, None
     finally:
         cur.close()
-def build_and_store_voyager_index(db_conn=None, force_rebuild: bool = False):
+def build_and_store_voyager_index(db_conn=None):
+    """
+    Fetches all song embeddings, builds a new Voyager index, and stores it
+    atomically in the 'voyager_index_data' table in PostgreSQL.
+
+    Accepts an optional db_conn (psycopg2 connection). If None, the function
+    will acquire a connection via app_helper.get_db().
+    """
+    if not VOYAGER_AVAILABLE:
+        logger.warning("Voyager not available - skipping index build")
+        return
+
+    # Acquire DB connection if not provided
+    if db_conn is None:
+        try:
+            from app_helper import get_db
+            db_conn = get_db()
+        except Exception:
+            logger.error("build_and_store_voyager_index: no db_conn provided and get_db() failed.")
+            return
+
+    logger.info("Starting to build and store Voyager index...")
+
+    # Map the string metric from config to the voyager.Space enum
+    metric_str = VOYAGER_METRIC.lower()
+    if metric_str == 'angular':
+        space = voyager.Space.Cosine
+    elif metric_str == 'euclidean':
+        space = voyager.Space.Euclidean
+    elif metric_str == 'dot':
+        space = voyager.Space.InnerProduct
+    else:
+        logger.warning(f"Unknown Voyager metric '{VOYAGER_METRIC}'. Defaulting to Cosine.")
+        space = voyager.Space.Cosine
+
+    cur = db_conn.cursor()
+    try:
+        logger.info("Fetching all embeddings from the database...")
+        cur.execute("SELECT item_id, embedding FROM embedding")
+        all_embeddings = cur.fetchall()
+
+        if not all_embeddings:
+            logger.warning("No embeddings found in DB. Voyager index will not be built.")
+            return
+
+        logger.info(f"Found {len(all_embeddings)} embeddings to index.")
+
+        voyager_index_builder = voyager.Index(
+            space=space,
+            num_dimensions=EMBEDDING_DIMENSION,
+            M=VOYAGER_M,
+            ef_construction=VOYAGER_EF_CONSTRUCTION
+        )
+
+        local_id_map = {}
+        voyager_item_index = 0
+        vectors_to_add = []
+        ids_to_add = []
+
+        for item_id, embedding_blob in all_embeddings:
+            if embedding_blob is None:
+                logger.warning(f"Skipping item_id {item_id}: embedding data is NULL.")
+                continue
+
+            embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
+
+            if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
+                               f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
+                continue
+
+            vectors_to_add.append(embedding_vector)
+            ids_to_add.append(voyager_item_index)
+            local_id_map[voyager_item_index] = item_id
+            voyager_item_index += 1
+
+        if not vectors_to_add:
+            logger.warning("No valid embeddings were found to add to the Voyager index. Aborting build process.")
+            return
+
+        logger.info(f"Adding {len(vectors_to_add)} items to the index...")
+        voyager_index_builder.add_items(np.array(vectors_to_add), ids=np.array(ids_to_add))
+
+        logger.info(f"Building index with {len(vectors_to_add)} items...")
+
+        temp_file_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
+                temp_file_path = tmp.name
+
+            voyager_index_builder.save(temp_file_path)
+
+            with open(temp_file_path, 'rb') as f:
+                index_binary_data = f.read()
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+        logger.info(f"Voyager index binary data size to be stored: {len(index_binary_data)} bytes.")
+
+        if not index_binary_data:
+            logger.error("CRITICAL: Generated Voyager index file is empty. Aborting database storage.")
+            return
+
+        id_map_json = json.dumps(local_id_map)
+
+        logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
+        upsert_query = """
+            INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (index_name) DO UPDATE SET
+                index_data = EXCLUDED.index_data,
+                id_map_json = EXCLUDED.id_map_json,
+                embedding_dimension = EXCLUDED.embedding_dimension,
+                created_at = CURRENT_TIMESTAMP;
         """
-        Placeholder/compatibility shim for the original index build function.
+        # Use psycopg2.Binary to ensure proper bytea handling
+        cur.execute(upsert_query, (INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, EMBEDDING_DIMENSION))
+        db_conn.commit()
+        logger.info("Voyager index build and database storage complete.")
 
-        Many modules import this function at module-import time. The full index
-        builder is an expensive operation and may be invoked from CLI/worker
-        code paths. To avoid ImportError during startup, this stub provides a
-        no-op implementation that logs the call. If you need the full builder
-        behavior, replace this stub with the original implementation or call
-        the dedicated rebuild script.
-
-        Parameters:
-            db_conn: optional database connection (may be required by real builder)
-            force_rebuild: when True, a full rebuild should be forced (ignored by stub)
-
-        Returns: None
-        """
-        logger.info("build_and_store_voyager_index called (stub). force_rebuild=%s. No action taken.", force_rebuild)
-        return None
+    except Exception as e:
+        logger.error("An error occurred during Voyager index build: %s", e, exc_info=True)
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 def get_vector_by_id(item_id: str) -> np.ndarray | None:
     """
@@ -851,14 +974,17 @@ def _execute_radius_walk(
             if cid in used_ids:
                 return False
             # Per-bucket: avoid more than one song per artist inside this bucket
+            # This restriction is considered part of the artist-cap behavior.
+            # Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED (no per-bucket restriction).
             try:
-                author = items[i].get('author')
-                if author and author in bucket_artist_set:
-                    return False
+                if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                    author = items[i].get('author')
+                    if author and author in bucket_artist_set:
+                        return False
             except Exception:
                 pass
-            # Enforce global artist cap
-            if eliminate_duplicates:
+            # Enforce global artist cap. Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED.
+            if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
                 author = items[i].get('author')
                 if author:
                     # If this artist has already appeared in two different buckets
@@ -918,17 +1044,19 @@ def _execute_radius_walk(
                 # Skip if already used
                 if cid in used_ids:
                     continue
-                # Per-bucket: avoid more than one song per artist inside this bucket
+                # Per-bucket: avoid more than one song per artist inside this bucket.
+                # Treat MAX_SONGS_PER_ARTIST <= 0 as DISABLED (no per-bucket restriction).
                 try:
-                    auth = meta.get('author')
-                    if auth and auth in bucket_artist_set:
-                        if INSTRUMENT_BUCKET_SKIPS:
-                            logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-artist-limit {auth}")
-                        continue
+                    if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+                        auth = meta.get('author')
+                        if auth and auth in bucket_artist_set:
+                            if INSTRUMENT_BUCKET_SKIPS:
+                                logger.debug(f"Bucket {bucket_index}: skipping idx={i} bucket-artist-limit {auth}")
+                            continue
                 except Exception:
                     pass
-                # Global artist cap check
-                if eliminate_duplicates:
+                # Global artist cap check (only enforce if positive cap configured)
+                if eliminate_duplicates and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
                     auth = meta.get('author')
                     if auth:
                         # if artist already occupies two different buckets and hasn't hit the cap, skip
@@ -1130,6 +1258,7 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
         return []
 
+
     # If caller didn't supply radius_similarity explicitly (None), use the configured default.
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
@@ -1245,25 +1374,29 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         
         # 5. Apply artist cap (eliminate_duplicates)
         if eliminate_duplicates:
-            item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-            
-            track_details_list = get_score_data_by_ids(item_ids_to_check)
-            details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
+            # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
+            if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+                final_results = unique_results_by_song
+            else:
+                item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
+                
+                track_details_list = get_score_data_by_ids(item_ids_to_check)
+                details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
 
-            artist_counts = {}
-            final_results = []
-            for song in unique_results_by_song:
-                song_id = song['item_id']
-                author = details_map.get(song_id, {}).get('author')
+                artist_counts = {}
+                final_results = []
+                for song in unique_results_by_song:
+                    song_id = song['item_id']
+                    author = details_map.get(song_id, {}).get('author')
 
-                if not author:
-                    logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
-                    continue
+                    if not author:
+                        logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
+                        continue
 
-                current_count = artist_counts.get(author, 0)
-                if current_count < MAX_SONGS_PER_ARTIST:
-                    final_results.append(song)
-                    artist_counts[author] = current_count + 1
+                    current_count = artist_counts.get(author, 0)
+                    if current_count < MAX_SONGS_PER_ARTIST:
+                        final_results.append(song)
+                        artist_counts[author] = current_count + 1
         else:
             final_results = unique_results_by_song
 
@@ -1362,35 +1495,102 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
             added_songs_details.append(current_details)
 
     if eliminate_duplicates:
-        artist_counts = {}
-        final_results = []
-        for song in unique_songs_by_content:
-            author = item_details.get(song['item_id'], {}).get('author')
-            if not author:
-                continue
+        # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
+        if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+            final_results = unique_songs_by_content
+        else:
+            artist_counts = {}
+            final_results = []
+            for song in unique_songs_by_content:
+                author = item_details.get(song['item_id'], {}).get('author')
+                if not author:
+                    continue
 
-            current_count = artist_counts.get(author, 0)
-            if current_count < MAX_SONGS_PER_ARTIST:
-                final_results.append(song)
-                artist_counts[author] = current_count + 1
+                current_count = artist_counts.get(author, 0)
+                if current_count < MAX_SONGS_PER_ARTIST:
+                    final_results.append(song)
+                    artist_counts[author] = current_count + 1
     else:
         final_results = unique_songs_by_content
 
     return final_results[:n]
 
+
+def get_max_distance_for_id(target_item_id: str):
+    """
+    Returns the exact maximum distance from the given item to any other item in the loaded voyager index.
+    Returns a dict: { 'max_distance': float, 'farthest_item_id': str | None }
+    Raises RuntimeError if the index is not loaded.
+    """
+    if voyager_index is None or id_map is None or reverse_id_map is None:
+        raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+
+    target_voyager_id = reverse_id_map.get(target_item_id)
+    if target_voyager_id is None:
+        return None
+
+    try:
+        query_vector = voyager_index.get_vector(target_voyager_id)
+    except Exception as e:
+        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
+        return None
+
+    # Query distances to all items in the index (includes self). This returns a list of neighbor ids and distances.
+    try:
+        nbrs, dists = voyager_index.query(query_vector, k=len(voyager_index))
+    except Exception as e:
+        logger.error(f"Error querying voyager index for max distance of {target_item_id}: {e}", exc_info=True)
+        return None
+
+    # Find the maximum distance excluding the item itself
+    max_d = float('-inf')
+    far_voy = None
+    for vid, dist in zip(nbrs, dists):
+        if vid == target_voyager_id:
+            continue
+        if dist is None:
+            continue
+        if dist > max_d:
+            max_d = dist
+            far_voy = vid
+
+    if max_d == float('-inf'):
+        # No other items in index (single-item index) -> distance 0.0
+        return { 'max_distance': 0.0, 'farthest_item_id': None }
+
+    return { 'max_distance': float(max_d), 'farthest_item_id': id_map.get(far_voy) }
+
 def get_item_id_by_title_and_artist(title: str, artist: str):
     """
-    Finds the item_id for an exact title and artist match.
+    Finds the item_id for a title and artist match.
+    Uses fuzzy matching (case-insensitive partial match) to handle variations.
     """
     from app_helper import get_db
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
-        query = "SELECT item_id FROM score WHERE title = %s AND author = %s LIMIT 1"
+        # First try exact match (case-insensitive)
+        query = "SELECT item_id FROM score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1"
         cur.execute(query, (title, artist))
         result = cur.fetchone()
         if result:
             return result['item_id']
+        
+        # If no exact match, try fuzzy match (partial match on both title and artist)
+        query = """
+            SELECT item_id, title, author, 
+                   similarity(LOWER(title), LOWER(%s)) + similarity(LOWER(author), LOWER(%s)) AS score
+            FROM score 
+            WHERE LOWER(title) ILIKE LOWER(%s) AND LOWER(author) ILIKE LOWER(%s)
+            ORDER BY score DESC
+            LIMIT 1
+        """
+        cur.execute(query, (title, artist, f"%{title}%", f"%{artist}%"))
+        result = cur.fetchone()
+        if result:
+            logger.info(f"Fuzzy matched '{title}' by '{artist}' to '{result['title']}' by '{result['author']}'")
+            return result['item_id']
+        
         return None
     except Exception as e:
         logger.error(f"Error fetching item_id for '{title}' by '{artist}': {e}", exc_info=True)

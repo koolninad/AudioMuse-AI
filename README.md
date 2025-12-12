@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Jellyfin 10.10.7, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 10.11.3, Navidrome 0.58.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.3%2C%20Navidrome%200.58.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 
 
 # **AudioMuse-AI - Where Music Takes Shape** 
@@ -10,9 +10,9 @@
 </p>
 
 
-AudioMuse-AI is an Open Source Dockerized environment that brings **automatic playlist generation** to your self-hosted music library. Using powerful tools like [Librosa](https://github.com/librosa/librosa) and [ONNX](https://onnx.ai/), it performs **sonic analysis** on your audio files locally, allowing you to curate the perfect playlist for any mood or occasion without relying on external APIs.
+AudioMuse-AI is an open-source, Dockerized environment that brings **automatic playlist generation** to your self-hosted music library. Using tools such as [Librosa](https://github.com/librosa/librosa) and [ONNX](https://onnx.ai/), it performs **sonic analysis** on your audio files locally, allowing you to curate playlists for any mood or occasion without relying on external APIs.
 
-Deploy it easily on your local machine with Docker Compose/Podman or scale it up in your Kubernetes cluster, with the support of **AMD64** and **ARM64** architecture. It integrate with API the main Music server like [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), [Emby](https://emby.media) and many mores will come in the future.
+Deploy it easily on your local machine with Docker Compose or Podman, or scale it in a Kubernetes cluster (supports **AMD64** and **ARM64**). It integrates with the main music servers' APIs such as [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), and [Emby](https://emby.media). More integrations may be added in the future.
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
@@ -30,7 +30,7 @@ More information, like **Frequently Asked Question (FAQ)** can be found in the [
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
   > * [AudioMuse-AI Helm Chart](https://github.com/NeptuneHub/AudioMuse-AI-helm): helm chart for easy installation on Kubernetes;
   > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin;
-  > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): **Experimental** Open Subosnic like Music Sever with integrated sonic functionality.
+  > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
 > * Version 0.7.4-beta add the support of Cron Job to schedule Analysis and Clustering task. 
@@ -73,7 +73,7 @@ You can directly check the Helm Chart repo for more details and deployments exam
 
 ## **Quick Start Deployment on K3S**
 
-This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by direct use of `deployment`
+This section provides a minimal guide to deploy AudioMuse-AI on a K3S (Kubernetes) cluster by directly using the `deployment` manifests.
 
 * **Prerequisites:**
     *   A running K3S cluster.
@@ -139,33 +139,42 @@ Choose the appropriate file based on your media server setup.
 *   Docker and Docker Compose installed.
 *   `Jellyfin` or `Navidrome` or `Lyrion` or `Emby` installed.
 *   Respect the [hardware requirements](#hardware-requirements)
+*   Optionally, you can install the `docker-model-plugin` to enable the use of the [Docker Model Runner](https://docs.docker.com/ai/model-runner/get-started/#docker-engine) for running AI models locally. If you choose this setup, use `deployment/docker-compose-dmr.yaml` to configure AudioMuse-AI to communicate with DMR through an OpenAI-compatible API interface.
 
 **Steps:**
-1.  **Navigate to the `deployment` directory:**
+1.  **Create your environment file:**
     ```bash
-    cd deployment
+    cp deployment/.env.example deployment/.env
     ```
+    you can find the example here: [deployment/.env.example](deployment/.env.example)
+    
 2.  **Review and Customize:**
-    The `docker-compose.yaml`, `docker-compose-navidrome.yaml` and `docker-compose-lyrion.yaml` files are pre-configured with default credentials and settings suitable for local testing. You can edit environment variables within this file directly (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` for **Jellyfin** or `NAVIDROME_URL`, `NAVIDROME_USER` and `NAVIDROME_PASSWORD` for **Navidrome**,  `LYRION_URL` for Lyrion that doesn't require any passwords).
+    Edit `.env` and provide the media-server credentials (e.g., `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN` or `NAVIDROME_*`, `EMBY_*`, `LYRION_URL`) along with any API keys (`GEMINI_API_KEY`, `MISTRAL_API_KEY`). The same values are injected into every compose file, so you only need to edit them here.
 3.  **Start the Services:**
     ```bash
-    docker compose up -d
+    docker compose -f deployment/docker-compose.yaml up -d
     ```
-    This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
-4.  **Access the Application:**
+    Swap the compose filename if you're targeting Navidrome (`docker-compose-navidrome.yaml`), Lyrion (`docker-compose-lyrion.yaml`) or Emby (`docker-compose-emby.yaml`). This command starts all services (Flask app, RQ workers, Redis, PostgreSQL) in detached mode (`-d`).
+
+    **IMPORTANT:** both `docker-compose.yaml` and `.env` file need to be in the same directory.
+5.  **Access the Application:**
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
-5.  **Stopping the Services:**
+6.  **Stopping the Services:**
     ```bash
-    docker compose down
+    docker compose -f deployment/docker-compose.yaml down
     ```
+    Swap the compose filename here as well if you started a different variant.
 **Note:**
   > If you use LMS instead of the password you need to create and use the Subsonic API token. Additional Subsonic API based Mediaserver could require it in place of the password.
+
+**Remote worker tip:**
+If you deploy a worker on different hardware (using `docker-compose-worker.yaml` or `docker-compose-worker-nvidia.yaml`), copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
 
 ## **Local Deployment with Podman Quadlets**
 
 For an alternative local setup, [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files are provided in the `deployment/podman-quadlets` directory for interacting with **Navidrome**. The unit files can  be edited for use with **Jellyfin**. 
 
-These files are configured to automatically update AudioMuse-AI using the [latest](#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.     
+These files are configured to automatically update AudioMuse-AI using the [latest](#docker-image-tagging-strategy) stable release and should perform an automatic rollback if the updated image fails to start.
 
 **Prerequisites:**
 *   Podman and systemd.
@@ -201,27 +210,59 @@ These files are configured to automatically update AudioMuse-AI using the [lates
       
 ## **Hardware Requirements**
 
-AudioMuse-Ai is actually tested on:
-* **INTEL**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVME SSD
-* **ARM**: Raspberry Pi 5 8GB RAM and NVME SSD
+AudioMuse-AI has been tested on:
+* **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
+* **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD
 
-The **suggested requirements** are: 4core INTEL or ARM CPU (Producted from 2015 and above) with AVX support, 8GB ram and an SSD.
+Suggested requirements:
+* A 4-core Intel or ARM CPU (produced in 2015 or later) with AVX support
+* 8 GB RAM
+* SSD storage
 
-It can most probably run on older CPU (from 3rd gen and above) and with less ram (maybe 4GB) but I never tested.
+It may run on older CPUs (3rd generation and above) and with less RAM (for example, 4 GB), but these configurations are untested.
 
-Intel I7 CPU of first gen or older **DON'T WORK** because Tensorflow require AVX supprt.
+First-generation Intel i7 CPUs and older are not supported because TensorFlow requires AVX support.
 
-If you tested with CPU older than the suggested requirements, please track this in an issue ticket reporting your feedback.
+If you have tested the software on older CPUs, please open an issue to share your feedback.
 
-You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to look which one was already tested till now.
+You can check the [Tested Hardware and Configuration](docs/HARDWARE.md) notes to see which hardware has already been validated.
 
-**IMPORTANT** From `0.7.0-beta` ONNX replace Tensorflow. So there is the possibility that CPU not supported till can now work.
+**IMPORTANT:** From `v0.7.0-beta`, ONNX replaces TensorFlow. As a result, some CPUs previously not supported may now work.
 
 ### (Optional) Experimental Nvidia Support
 
-NVidia GPU support is available for the worker process. This can significantly speed up processing of tracks. 
+NVidia GPU support is available for analysis task in the worker process. This can significantly speed up processing of tracks.
 
-This has been tested with an NVidia RX 3060 running CUDA 12.9 and Driver V575.64.05. During testing, the worker used up to 10GiB of VRAM but your mileage may vary.
+**NEW:** GPU-accelerated clustering is now available using RAPIDS cuML. This can provide **10-30x speedup** for clustering tasks.
+
+**Features:**
+- GPU-accelerated KMeans, DBSCAN, and PCA using RAPIDS cuML
+- Automatic fallback to CPU if GPU is unavailable or encounters errors
+- Supports all existing clustering configurations and parameters
+- Compatible with NVIDIA GPUs with CUDA 12.8.1+
+
+**To enable GPU clustering:**
+
+1. Use the NVIDIA Docker image (e.g., `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`)
+2. Set environment variable in your `.env` file:
+   ```
+   USE_GPU_CLUSTERING=true
+   ```
+3. Ensure NVIDIA Container Toolkit is installed on your host
+4. Use docker-compose files with GPU support (e.g., `docker-compose-nvidia.yaml` or `docker-compose-worker-nvidia.yaml`)
+
+**Performance Impact:**
+- **KMeans**: 10-50x faster than CPU
+- **DBSCAN**: 5-100x faster than CPU
+- **PCA**: 10-40x faster than CPU
+- **Overall clustering task**: 10-30x speedup for typical workloads (5000 iterations)
+
+**Example:** A clustering task that takes 2-4 hours on CPU may complete in 5-15 minutes on GPU.
+
+**Notes:**
+- GaussianMixture and SpectralClustering use CPU (no GPU implementation available)
+- GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
+- GPU is already used for audio analysis models (ONNX inference)
 
 ## **Configuration Parameters**
 
@@ -256,8 +297,9 @@ The **mandatory** parameter that you need to change from the example are this:
 | `REDIS_URL`          | (Required) URL for Redis.                                               | `redis://localhost:6379/0`        |
 | `GEMINI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is GEMINI) Your Google Gemini API Key. | *(N/A - from Secret)* |
 | `MISTRAL_API_KEY`    | (Required if `AI_MODEL_PROVIDER` is MISTRAL) Your Mistral API Key.      | *(N/A - from Secret)* |
+| `OPENAI_API_KEY`     | (Required if `AI_MODEL_PROVIDER` is OPENAI) Your OpenAI / OpenRouter API Key. | *(N/A - from Secret)* |
 
-These parameter could be leave as it is:
+These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
@@ -265,8 +307,11 @@ These parameter could be leave as it is:
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
+| `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
+| `WORKER_POSTGRES_HOST` | This is the Url of your the postgres service on your server. The worker uses this to connect the postgres service the flask app uses too. Make sure to not include a protocol (like "http") (e.g. 100.000.00.00) | `false` |
+| `WORKER_REDIS_URL` | This is the Url of your the redis service on your server. The worker uses this to connect to the redis service the flask app uses too. Make sure to include the protocol "redis://" and the dbindex "/0" (e.g. redis://100.000.00.00:6379/0)   | `false` |
 
-This are the default parameters on wich the analysis or clustering task will be lunched. You will be able to change them to another value directly in the front-end:
+These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 
 | Parameter                                   | Description                                                                                                                | Default Value   |
 |---------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-----------------|
@@ -281,7 +326,8 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `5000`          |
 | `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
-| **Similarity General**                      |                                                                                                                            |                 |
+| `USE_GPU_CLUSTERING`                        | When true enalbe the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
+| **Similarity General**                      |                                                                                                                           |                 |
 | `INDEX_NAME`                                | Name of the index, no need to change.                                                                                     | `music_library` |
 | `VOYAGER_EF_CONSTRUCTION`                   | Number of element analyzed to create the neighbor list in the index.                                                      | `1024`          |
 | `VOYAGER_M`                                 | Number of neighbore More = higher accuracy.                                                                               | `64`            |
@@ -341,7 +387,7 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `PCA_COMPONENTS_MIN`                        | Min PCA components (0 to disable).                                                        | `0`                                    |
 | `PCA_COMPONENTS_MAX`                        | Max PCA components (e.g., `8` for feature vectors, `199` for embeddings).                 | `199`                                  |
 | **AI Naming (*)**                           |                                                                                            |                                        |
-| `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL` or `NONE`.                                     | `NONE`                                 |
+| `AI_MODEL_PROVIDER`                         | AI provider: `OLLAMA`, `GEMINI`, `MISTRAL`, `OpenAI` or `NONE`.                           | `NONE`                                 |
 | `TOP_N_ELITES`                              | Number of best solutions kept as elites.                                                  | `10`                                   |
 | `SAMPLING_PERCENTAGE_CHANGE_PER_RUN`        | Percentage of songs to swap out in the stratified sample between runs (0.0 to 1.0).       | `0.2`                                  |
 | `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`    | Minimum number of songs to target per stratified genre during sampling.                   | `100`                                  |
@@ -350,6 +396,8 @@ This are the default parameters on wich the analysis or clustering task will be 
 | `OLLAMA_MODEL_NAME`                         | Ollama model to use (if `AI_MODEL_PROVIDER` is OLLAMA).                                   | `mistral:7b`                          |
 | `GEMINI_MODEL_NAME`                         | Gemini model to use (if `AI_MODEL_PROVIDER` is GEMINI).                                   | `gemini-2.5-pro`                      |
 | `MISTRAL_MODEL_NAME`                        | Mistral model to use (if `AI_MODEL_PROVIDER` is MISTRAL).                                 | `ministral-3b-latest`                  |
+| `OPENAI_MODEL_NAME`                         | OpenAI or OpenRouter model to use (if `AI_MODEL_PROVIDER` is OPENAI).                     | `openai/gpt-4`                          |
+| `OPENAI_SERVER_URL`                         | URL for OpenAI / OpenRouter (if `AI_MODEL_PROVIDER` is OPENAI).                          | `https://openrouter.ai/api/v1/chat/completions` |
 | **Scoring Weights**                         |                                                                                            |                                        |
 | `SCORE_WEIGHT_DIVERSITY`                    | Weight for inter-playlist mood diversity.                                                 | `2.0`                                  |
 | `SCORE_WEIGHT_PURITY`                       | Weight for playlist purity (intra-playlist mood consistency).                             | `1.0`                                  |
@@ -382,7 +430,7 @@ Our GitHub Actions workflow automatically builds and pushes Docker images. Here'
   * Ensures you're running a precise, versioned build.  
   * **Use for reproducible deployments or locking to a specific version.**
  
-**IMPORTANT** the `-nvidia` image are **experimantal** image. Try it if you want to help us to improve BUT we suggest to don't use it for normal daily use for now. 
+**IMPORTANT:** the `-nvidia` images are experimental. Try them if you want to help us improve the support, but we do not recommend using them for daily production use.
 
 ## **Key Technologies**
 

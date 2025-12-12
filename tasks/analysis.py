@@ -51,6 +51,8 @@ from ai import get_ai_playlist_name, creative_prompt_template
 from .commons import score_vector
 # MODIFIED: Import from voyager_manager instead of annoy_manager
 from .voyager_manager import build_and_store_voyager_index
+# Import artist GMM manager for artist similarity index
+from .artist_gmm_manager import build_and_store_artist_index
 # MODIFIED: The functions from mediaserver no longer need server-specific parameters.
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
 
@@ -407,7 +409,6 @@ def analyze_track(file_path, mood_labels_list, model_paths):
             other_predictions[key] = 0.0
 
 
-
 # --- RQ Task Definitions ---
 # MODIFIED: Removed jellyfin_url, jellyfin_user_id, jellyfin_token as they are no longer needed for the function calls.
 def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
@@ -485,6 +486,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
                 progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
                 log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
+
+                # Store artist ID mapping for all tracks (even if already analyzed)
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    artist_name = item.get('AlbumArtist')
+                    artist_id = item.get('ArtistId')
+                    logger.info(f"Track '{item.get('Name')}': artist_name='{artist_name}', artist_id='{artist_id}'")
+                    if artist_name and artist_id:
+                        upsert_artist_mapping(artist_name, artist_id)
+                        logger.info(f"✓ Stored artist mapping: '{artist_name}' → '{artist_id}'")
+                    else:
+                        if not artist_id:
+                            logger.warning(f"✗ No artist_id for track '{item.get('Name')}' by '{artist_name}'")
+                except Exception as mapping_error:
+                    logger.error(f"Failed to store artist mapping for '{artist_name}': {mapping_error}", exc_info=True)
 
                 if str(item['Id']) in existing_track_ids_set:
                     tracks_skipped_count += 1
@@ -596,33 +612,96 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     return {row[0] for row in cur.fetchall()}
 
             def monitor_and_clear_jobs():
+                """Monitor active RQ jobs and keep `albums_completed` in sync.
+
+                This function first tries to use RQ's Job.fetch to detect terminal jobs
+                (finished/failed/canceled). As a more reliable fallback it also queries
+                the database for child task records (which are updated by the child
+                job when it finishes) and uses that as the source of truth. This
+                helps in cases where RQ job state is not available or the worker
+                uses a different Redis namespace.
+                """
                 nonlocal albums_completed, last_rebuild_count
+                removed = 0
+
+                # First: try to detect terminal jobs via RQ
                 for job_id in list(active_jobs.keys()):
                     try:
-                        # **MODIFIED**: Added a try-except block to handle Redis timeouts gracefully.
                         job = Job.fetch(job_id, connection=redis_conn)
                         if job.is_finished or job.is_failed or job.is_canceled:
                             del active_jobs[job_id]
-                            albums_completed += 1
+                            removed += 1
                     except NoSuchJobError:
-                        logger.warning(f"Job {job_id} not found in Redis. Assuming complete.")
-                        del active_jobs[job_id]
-                        albums_completed += 1
+                        logger.debug(f"Job {job_id} not found in RQ. Will reconcile with DB status.")
+                        # Do not increment removed here; we'll reconcile via DB below.
                     except RedisTimeoutError:
                         logger.warning(f"Redis timeout while fetching job {job_id}. Will retry on next loop.")
-                        # We don't remove the job, we'll try fetching it again later.
                         continue
                     except Exception as e:
-                        # Catch-all to avoid a single unexpected failure stopping the monitor loop.
-                        # Don't remove the job here because the fetch failed unexpectedly (network, auth, etc.).
                         logger.warning(f"Unexpected error while fetching job {job_id}: {e}. Will retry on next loop.", exc_info=True)
                         continue
-                
+
+                if removed:
+                    albums_completed += removed
+
+                # Second: reconcile with DB child task statuses (authoritative)
+                try:
+                    from app_helper import get_child_tasks_from_db
+                    child_tasks = get_child_tasks_from_db(current_task_id)
+                    terminal_statuses = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
+                    db_completed = sum(1 for t in child_tasks if t.get('status') in terminal_statuses)
+
+                    if db_completed != albums_completed:
+                        logger.info(f"Reconciling albums_completed: RQ_count={albums_completed} DB_count={db_completed}")
+                        albums_completed = db_completed
+                        # Remove any active_jobs whose IDs are in DB terminal list
+                        terminal_ids = {t['task_id'] for t in child_tasks if t.get('status') in terminal_statuses}
+                        for job_id in list(active_jobs.keys()):
+                            if job_id in terminal_ids:
+                                try:
+                                    del active_jobs[job_id]
+                                except KeyError:
+                                    pass
+                except Exception as e:
+                    logger.error(f"Failed to reconcile child tasks from DB: {e}", exc_info=True)
+
+                # Rebuild index in batches as before
                 if albums_completed > last_rebuild_count and (albums_completed - last_rebuild_count) >= REBUILD_INDEX_BATCH_SIZE:
-                    log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index...", current_progress)
-                    # MODIFIED: Call the voyager index builder
+                    log_and_update_main(f"Batch of {albums_completed - last_rebuild_count} albums complete. Rebuilding index and map...", current_progress)
+                    
+                    # Build Voyager index
                     build_and_store_voyager_index(get_db())
-                    redis_conn.publish('index-updates', 'reload')
+                    
+                    # Build artist similarity index
+                    try:
+                        build_and_store_artist_index(get_db())
+                        logger.info('Artist similarity index rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store artist similarity index during batch rebuild: {e}")
+                    
+                    # Build song map projection
+                    try:
+                        from app_helper import build_and_store_map_projection
+                        build_and_store_map_projection('main_map')
+                        logger.info('Song map projection rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store map projection during batch rebuild: {e}")
+                    
+                    # Build artist component projection
+                    try:
+                        from app_helper import build_and_store_artist_projection
+                        build_and_store_artist_projection('artist_map')
+                        logger.info('Artist component projection rebuilt during batch.')
+                    except Exception as e:
+                        logger.warning(f"Failed to build/store artist projection during batch rebuild: {e}")
+                    
+                    # Publish single reload message to trigger Flask container to reload ALL indexes and maps
+                    try:
+                        redis_conn.publish('index-updates', 'reload')
+                        logger.info('Published reload message to Flask container after batch rebuild.')
+                    except Exception as e:
+                        logger.warning(f'Could not publish reload message to redis during batch rebuild: {e}')
+                    
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
@@ -645,6 +724,20 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     checked_album_ids.add(album['Id'])
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server.")
                     continue
+
+                # Store artist ID mappings for all tracks in this album (even if already analyzed)
+                try:
+                    from app_helper_artist import upsert_artist_mapping
+                    for track in tracks:
+                        artist_name = track.get('AlbumArtist')
+                        artist_id = track.get('ArtistId')
+                        if artist_name and artist_id:
+                            upsert_artist_mapping(artist_name, artist_id)
+                            logger.info(f"✓ Mapped artist: '{artist_name}' → '{artist_id}'")
+                        elif artist_name and not artist_id:
+                            logger.warning(f"✗ No artist_id for '{artist_name}' in album '{album.get('Name')}'")
+                except Exception as e:
+                    logger.error(f"Failed to store artist mappings for album '{album.get('Name')}': {e}", exc_info=True)
 
                 # If all tracks already exist in DB, skip and log how many.
                 try:
@@ -691,9 +784,16 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
-            # MODIFIED: Call the voyager index builder
+            # Build Voyager index (song embeddings)
             build_and_store_voyager_index(get_db())
-            redis_conn.publish('index-updates', 'reload')
+            
+            # Build artist similarity index
+            log_and_update_main("Building artist similarity index...", 96)
+            try:
+                build_and_store_artist_index(get_db())
+                logger.info('Artist similarity index built and stored.')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist similarity index: {e}")
 
             # Build and store the 2D map projection for the web map (best-effort)
             try:
@@ -705,6 +805,24 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     logger.info('Precomputed map projection build returned no data (no embeddings?).')
             except Exception as e:
                 logger.warning(f"Failed to build/store precomputed map projection: {e}")
+            
+            # Build and store the 2D artist component projection
+            try:
+                from app_helper import build_and_store_artist_projection
+                built = build_and_store_artist_projection('artist_map')
+                if built:
+                    logger.info('Precomputed artist component projection built and stored.')
+                else:
+                    logger.info('Artist component projection build returned no data.')
+            except Exception as e:
+                logger.warning(f"Failed to build/store artist component projection: {e}")
+
+            # Publish reload message to trigger Flask container to reload all indexes and maps
+            try:
+                redis_conn.publish('index-updates', 'reload')
+                logger.info('Published reload message to Flask container after final analysis builds.')
+            except Exception as e:
+                logger.warning(f'Could not publish reload message to redis: {e}')
 
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
             log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)

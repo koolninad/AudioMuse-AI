@@ -130,7 +130,7 @@ def build_map_cache():
     # Try to use precomputed projection if available
     id_map, proj = None, None
     try:
-        id_map, proj = load_map_projection('main_map')
+        id_map, proj = load_map_projection('main_map', force_reload=True)
     except Exception as e:
         logger.debug('load_map_projection failed: %s', e)
 
@@ -220,7 +220,7 @@ def init_map_cache():
 @map_bp.route('/map')
 def map_ui():
     """Serve the map UI page."""
-    resp = render_template('map.html')
+    resp = render_template('map.html', title = 'AudioMuse-AI - Music Map', active='map')
     # Ensure the rendered page is not cached by browsers or intermediary caches.
     # We return a Response object below so Flask will set the appropriate headers.
     from flask import make_response
@@ -357,8 +357,10 @@ def map_cache_status():
             info[k] = {'count': v.get('count', 0), 'json_bytes': len(v.get('json_bytes') or b''), 'projection': v.get('projection')}
         return jsonify({'ok': True, 'buckets': info}), 200
     except Exception as e:
-        logger.exception('map_cache_status failed: %s', e)
-        return jsonify({'ok': False, 'reason': 'exception', 'error': str(e)}), 500
+        # Log the full exception (including stack) for diagnostics, but do not expose
+        # internal exception details to API clients.
+        logger.exception('map_cache_status failed')
+        return jsonify({'ok': False, 'reason': 'exception', 'error': 'Internal server error'}), 500
 
 
 @map_bp.route('/api/rebuild_map_cache', methods=['POST'])
@@ -369,5 +371,6 @@ def rebuild_map_cache():
         build_map_cache()
         return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200
     except Exception as e:
-        logger.exception('rebuild_map_cache failed: %s', e)
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        # Log the full exception for debugging, but return a generic error to the caller.
+        logger.exception('rebuild_map_cache failed')
+        return jsonify({'ok': False, 'error': 'Internal server error'}), 500

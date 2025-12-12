@@ -16,8 +16,10 @@ const gmmParamsDiv = document.getElementById('gmm-params');
 const spectralParamsDiv = document.getElementById('spectral-params'); // New reference for Spectral
 const aiModelProviderSelect = document.getElementById('config-ai_model_provider');
 const ollamaConfigGroup = document.getElementById('ollama-config-group');
+const openaiConfigGroup = document.getElementById('openai-config-group');
 const geminiConfigGroup = document.getElementById('gemini-config-group');
 const mistralConfigGroup = document.getElementById('mistral-config-group');
+const openaiConfigGroup = document.getElementById('openai-config-group');
 
 // Task Buttons
 const startAnalysisBtn = document.getElementById('start-analysis-btn');
@@ -101,7 +103,7 @@ function switchView(viewToShow) {
 
 async function fetchConfig() {
     try {
-        const response = await fetch('/api/config');
+        const response = await fetch(getConfigEndpointUrl);
         const config = await response.json();
         renderConfig(config);
         // Call switchView here to ensure the view is set correctly *before* showing the content
@@ -157,8 +159,13 @@ function renderConfig(config) {
     aiModelProviderSelect.value = config.ai_model_provider || 'NONE';
     document.getElementById('config-ollama_server_url').value = config.ollama_server_url || 'http://127.0.0.1:11434/api/generate';
     document.getElementById('config-ollama_model_name').value = config.ollama_model_name || 'mistral:7b';
+    document.getElementById('config-openai_server_url').value = config.openai_server_url || 'https://openrouter.ai/api/v1/chat/completions';
+    document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
+    document.getElementById('config-openai_model_name').value = config.openai_model_name || 'gpt-4';
+    document.getElementById('config-openai_base_url').value = config.openai_base_url || 'https://api.openai.com/v1/chat/completions';
+    document.getElementById('config-openai_api_tokens').value = config.openai_api_tokens || 1000;
 }
 
 function toggleClusteringParams() {
@@ -190,15 +197,21 @@ function toggleClusteringParams() {
 function toggleAiConfig() {
     const provider = aiModelProviderSelect.value;
     ollamaConfigGroup.classList.add('hidden');
+    openaiConfigGroup.classList.add('hidden');
     geminiConfigGroup.classList.add('hidden');
     mistralConfigGroup.classList.add('hidden');
+    openaiConfigGroup.classList.add('hidden');
 
     if (provider === 'OLLAMA') {
         ollamaConfigGroup.classList.remove('hidden');
+    } else if (provider === 'OPENAI') {
+        openaiConfigGroup.classList.remove('hidden');
     } else if (provider === 'GEMINI') {
         geminiConfigGroup.classList.remove('hidden');
     } else if (provider === 'MISTRAL') {
         mistralConfigGroup.classList.remove('hidden');
+    } else if (provider === 'OPENAI') {
+        openaiConfigGroup.classList.remove('hidden');
     }
 }
 
@@ -208,7 +221,7 @@ function updateCancelButtonState(isDisabled) {
 
 async function checkActiveTasks() {
     try {
-        const response = await fetch('/api/active_tasks');
+        const response = await fetch(getActiveTasksEndpointUrl);
         const mainActiveTask = await response.json(); 
 
         if (mainActiveTask && mainActiveTask.task_id) {
@@ -239,7 +252,7 @@ async function checkActiveTasks() {
             currentTaskId = null;
 
             try {
-                const finalStatusResponse = await fetch(`/api/status/${finishedTaskId}`);
+                const finalStatusResponse = await fetch(getTaskStatusEndpointUrl.replace(':taskId:', encodeURIComponent(finishedTaskId)));
                 if (finalStatusResponse.ok) {
                     const finalStatusData = await finalStatusResponse.json();
                     const upperFinalStatus = (finalStatusData.state || 'UNKNOWN').toUpperCase();
@@ -386,14 +399,19 @@ async function startTask(taskType) {
             ai_model_provider: aiModelProviderSelect.value,
             ollama_server_url: document.getElementById('config-ollama_server_url').value,
             ollama_model_name: document.getElementById('config-ollama_model_name').value,
+            openai_server_url: document.getElementById('config-openai_server_url').value,
+            openai_model_name: document.getElementById('config-openai_model_name').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
+            openai_model_name: document.getElementById('config-openai_model_name').value,
+            openai_base_url: document.getElementById('config-openai_base_url').value,
+            openai_api_tokens: document.getElementById('config-openai_api_tokens').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
         });
     }
 
     try {
-        const response = await fetch(`/api/${taskType}/start`, {
+        const response = await fetch(startAnalysisEndpointUrl.replace('/analysis/', `/${encodeURIComponent(taskType)}/`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -419,7 +437,7 @@ async function cancelTask() {
     if (!currentTaskId) return;
     updateCancelButtonState(true);
     try {
-        const response = await fetch(`/api/cancel/${currentTaskId}`, { method: 'POST' });
+        const response = await fetch(cancelTaskEndpointUrl.replace(':taskId:', encodeURIComponent(currentTaskId)), { method: 'POST' });
         const result = await response.json();
         if (response.ok) {
             showMessageBox('Success', result.message);
@@ -438,7 +456,7 @@ async function fetchPlaylists() {
     playlistsContainer.innerHTML = '<p>Fetching playlists...</p>';
     playlistsSection.style.display = 'block';
     try {
-        const response = await fetch('/api/playlists');
+        const response = await fetch(getPlaylistsEndpointUrl);
         if (!response.ok) throw new Error(`Server responded with ${response.status}`);
         const playlistsData = await response.json();
         renderPlaylists(playlistsData);
@@ -493,7 +511,7 @@ function showMessageBox(title, message) {
 
 async function fetchAndDisplayOverallLastTask() {
     try {
-        const response = await fetch('/api/last_task');
+        const response = await fetch(getLastOverallTaskStatusEndpointUrl);
         if (response.ok) {
             const lastTask = await response.json();
             if (lastTask && lastTask.task_id) displayTaskStatus(lastTask);
@@ -509,6 +527,15 @@ async function fetchAndDisplayOverallLastTask() {
 
 // --- Event Listeners & Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
+    // do work behind a reverse proxy we need to get the URLs resolved set and expect them in the following variables
+    console.assert(getActiveTasksEndpointUrl, "Missing getActiveTasksEndpointUrl url variable");
+    console.assert(getConfigEndpointUrl, "Missing getConfigEndpointUrl url variable");
+    console.assert(getTaskStatusEndpointUrl, "Missing getTaskStatusEndpointUrl url variable");
+    console.assert(startAnalysisEndpointUrl, "Missing startAnalysisEndpointUrl url variable");
+    console.assert(getLastOverallTaskStatusEndpointUrl, "Missing getLastOverallTaskStatusEndpointUrl url variable");
+    console.assert(getPlaylistsEndpointUrl, "Missing getPlaylistsEndpointUrl url variable");
+    console.assert(cancelTaskEndpointUrl, "Missing cancelTaskEndpointUrl url variable");
+
     await fetchConfig();
     if (!await checkActiveTasks()) {
         await fetchAndDisplayOverallLastTask();
